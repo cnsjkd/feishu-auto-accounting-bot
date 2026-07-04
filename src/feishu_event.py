@@ -202,11 +202,15 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                     f"[INFO] 飞书记账处理完成: created={result.get('created')}, queued={result.get('queued')}, dedupe_id={result.get('dedupe_id')}",
                     flush=True,
                 )
-                self._reply_to_message(message_id, build_accounting_reply(result, service.feishu_client.settings.bitable_view_url))
+                reply_text = build_accounting_reply(result, service.feishu_client.settings.bitable_view_url)
+                print(f"[INFO] 准备回复飞书消息: message_id={message_id}, reply_preview={reply_text[:120]}", flush=True)
+                self._reply_to_message(message_id, reply_text)
                 self._send_json(200, {"ok": True, **result})
             except Exception as exc:  # noqa: BLE001 - 入口层需要兜底打印清晰错误
                 print(f"[ERROR] 处理飞书事件失败: {exc}", flush=True)
-                self._reply_to_message(message_id, build_exception_reply(exc, service.feishu_client.settings.bitable_view_url))
+                reply_text = build_exception_reply(exc, service.feishu_client.settings.bitable_view_url)
+                print(f"[INFO] 准备回复飞书失败消息: message_id={message_id}, reply_preview={reply_text[:120]}", flush=True)
+                self._reply_to_message(message_id, reply_text)
                 self._send_json(200, {"ok": False, "error": str(exc)})
 
         def log_message(self, format: str, *args: Any) -> None:
@@ -267,6 +271,7 @@ def run_server(host: str, port: int, service: "AccountingService") -> None:
     """启动飞书事件 HTTP 服务。"""
     server = ThreadingHTTPServer((host, port), make_handler(service))
     print(f"[INFO] 飞书事件服务已启动: http://{host}:{port}/feishu/events", flush=True)
+    print("[INFO] 已启用记账结果聊天回复功能", flush=True)
     print("[INFO] 健康检查: /health", flush=True)
     try:
         server.serve_forever()
