@@ -110,13 +110,19 @@ def normalize_bill_data(data: dict[str, Any], original_text: str, source: str) -
 def build_dedupe_id(bill_data: dict[str, Any]) -> str:
     """生成稳定去重 ID。
 
-    第一版按日期、时间、类型、金额、商户/对象、原始文本和来源生成哈希。
-    后续可改为消息 ID + 账单字段组合，降低同一秒多笔账的误判概率。
+    本地命令行没有外部消息 ID，按账单核心字段生成哈希。
+    飞书事件应优先使用飞书 message_id 生成去重 ID，避免重复投递时模型解析时间不同导致重复记账。
     """
     raw = "|".join(
         str(bill_data.get(key, ""))
         for key in ["日期", "时间", "类型", "金额", "币种", "商户或对象", "原始文本", "记录来源"]
     )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def build_external_dedupe_id(namespace: str, external_id: str) -> str:
+    """根据外部事件 ID 生成稳定去重 ID。"""
+    raw = f"{namespace}:{external_id.strip()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 

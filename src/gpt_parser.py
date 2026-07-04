@@ -15,7 +15,7 @@ class GPTBillParser:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def parse(self, text: str, source: str = "飞书机器人") -> Bill:
+    def parse(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> Bill:
         """调用配置的大模型，将自然语言账单解析为 Bill。"""
         if not text or not text.strip():
             raise ValueError("待解析文本为空")
@@ -25,7 +25,7 @@ class GPTBillParser:
             content = result["choices"][0]["message"]["content"]
             model_data = extract_json_object(content)
             normalized = normalize_bill_data(model_data, original_text=text, source=source)
-            dedupe_id = build_dedupe_id(normalized)
+            final_dedupe_id = dedupe_id or build_dedupe_id(normalized)
             return Bill(
                 date=normalized["日期"],
                 time=normalized["时间"],
@@ -38,7 +38,7 @@ class GPTBillParser:
                 note=normalized["备注"],
                 original_text=normalized["原始文本"],
                 source=normalized["记录来源"],
-                dedupe_id=dedupe_id,
+                dedupe_id=final_dedupe_id,
             )
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise RuntimeError(f"解析大模型返回失败: {exc}; 原始返回: {result}") from exc

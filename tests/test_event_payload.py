@@ -8,7 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from feishu_event import extract_message_text  # noqa: E402
+from feishu_event import extract_message_info, extract_message_text  # noqa: E402
+from utils import build_external_dedupe_id  # noqa: E402
 
 
 def main() -> int:
@@ -24,6 +25,13 @@ def main() -> int:
     text, source = extract_message_text(payload)
     assert text == "今天中午美团点外卖花了38.5"
     assert source == "飞书机器人:om_xxx"
+    text, source, message_id = extract_message_info(payload)
+    assert text == "今天中午美团点外卖花了38.5"
+    assert source == "飞书机器人:om_xxx"
+    assert message_id == "om_xxx"
+    assert build_external_dedupe_id("feishu_message", message_id) == build_external_dedupe_id(
+        "feishu_message", "om_xxx"
+    )
 
     at_payload = {
         "event": {

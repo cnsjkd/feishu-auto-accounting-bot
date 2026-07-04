@@ -15,12 +15,12 @@ class AccountingService:
         self.parser = parser
         self.feishu_client = feishu_client
 
-    def handle_text(self, text: str, source: str = "飞书机器人") -> dict[str, Any]:
+    def handle_text(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> dict[str, Any]:
         """解析自然语言账单并写入 Bitable。
 
         如果 Bitable 暂时不可写，保存到本地待重试队列，避免账单丢失。
         """
-        bill: Bill = self.parser.parse(text, source=source)
+        bill: Bill = self.parser.parse(text, source=source, dedupe_id=dedupe_id)
         bill_fields = bill.to_bitable_fields()
         try:
             created, response = self.feishu_client.save_bill_once(bill)

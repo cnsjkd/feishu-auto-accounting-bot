@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from utils import json_dumps
+from utils import build_external_dedupe_id, json_dumps
 
 BILL_REPLY_FIELDS = [
     "日期",
@@ -24,6 +26,7 @@ BILL_REPLY_FIELDS = [
     "备注",
     "原始文本",
 ]
+PROCESSED_MESSAGE_CACHE_LIMIT = 1000
 
 if TYPE_CHECKING:
     from service import AccountingService
@@ -107,11 +110,24 @@ def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
 
 def build_exception_reply(error: Exception, table_url: str = "") -> str:
     """生成未进入业务结果时的异常回复。"""
-    lines = ["记账失败，未写入多维表格。", f"原因：{error}"]
+    reason = _format_user_facing_error(error)
+    lines = ["记账失败，未写入多维表格。", f"原因：{reason}"]
     if table_url:
         lines.append("")
         lines.append(f"查看记账表格：{table_url}")
     return "\n".join(lines)
+
+
+def _format_user_facing_error(error: Exception) -> str:
+    """把内部异常压缩成适合聊天窗口展示的短提示。"""
+    message = str(error)
+    if "解析大模型返回失败" in message or "模型返回内容中未找到 JSON 对象" in message:
+        return "这条消息不像一条明确的账单。请补充金额、用途或收入/支出信息后再发一次。"
+    if "所有模型调用均失败" in message or "调用大模型接口失败" in message:
+        return "大模型解析暂时失败，请稍后重试。"
+    if "写入 Bitable" in message or "Bitable" in message:
+        return message.split("; 原始返回", 1)[0][:300]
+    return message.split("; 原始返回", 1)[0][:300]
 
 
 def _format_bill_summary_lines(bill: dict[str, Any]) -> list[str]:
@@ -130,6 +146,11 @@ def _clean_feishu_text(text: str) -> str:
 
 
 def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
+    processing_message_ids: set[str] = set()
+    processed_message_ids: set[str] = set()
+    processed_message_order: deque[str] = deque()
+    processing_lock = Lock()
+
     class FeishuEventHandler(BaseHTTPRequestHandler):
         server_version = "AutoAccountingFeishu/1.0"
 
@@ -196,8 +217,17 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 return
 
             print(f"[INFO] 提取到飞书记账文本: {text} source={source}", flush=True)
+            event_dedupe_id = build_external_dedupe_id("feishu_message", message_id) if message_id else ""
+            duplicate_reason = self._mark_message_processing(message_id) if message_id else ""
+            if duplicate_reason:
+                print(
+                    f"[INFO] 忽略飞书重复投递: message_id={message_id}, reason={duplicate_reason}",
+                    flush=True,
+                )
+                self._send_json(200, {"ok": True, "ignored": True, "reason": duplicate_reason})
+                return
             try:
-                result = service.handle_text(text, source=source)
+                result = service.handle_text(text, source=source, dedupe_id=event_dedupe_id)
                 print(
                     f"[INFO] 飞书记账处理完成: created={result.get('created')}, queued={result.get('queued')}, dedupe_id={result.get('dedupe_id')}",
                     flush=True,
@@ -212,9 +242,33 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 print(f"[INFO] 准备回复飞书失败消息: message_id={message_id}, reply_preview={reply_text[:120]}", flush=True)
                 self._reply_to_message(message_id, reply_text)
                 self._send_json(200, {"ok": False, "error": str(exc)})
+            finally:
+                if message_id:
+                    self._mark_message_done(message_id)
 
         def log_message(self, format: str, *args: Any) -> None:
             print(f"[HTTP] {self.address_string()} - {format % args}", flush=True)
+
+        def _mark_message_processing(self, message_id: str) -> str:
+            """标记消息处理中；返回非空字符串表示重复事件应被忽略。"""
+            with processing_lock:
+                if message_id in processed_message_ids:
+                    return "duplicate_processed"
+                if message_id in processing_message_ids:
+                    return "duplicate_in_flight"
+                processing_message_ids.add(message_id)
+                return ""
+
+        def _mark_message_done(self, message_id: str) -> None:
+            with processing_lock:
+                processing_message_ids.discard(message_id)
+                if message_id in processed_message_ids:
+                    return
+                processed_message_ids.add(message_id)
+                processed_message_order.append(message_id)
+                while len(processed_message_order) > PROCESSED_MESSAGE_CACHE_LIMIT:
+                    expired_message_id = processed_message_order.popleft()
+                    processed_message_ids.discard(expired_message_id)
 
         def _reply_to_message(self, message_id: str, text: str) -> None:
             """尽力回复飞书消息，回复失败不影响事件确认。"""
