@@ -1,0 +1,21 @@
+services:
+  auto-accounting:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: feishu-auto-accounting-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env.production.example
+      - path: ../.env.production
+        required: false
+    ports:
+      - "18000:18000"
+    volumes:
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

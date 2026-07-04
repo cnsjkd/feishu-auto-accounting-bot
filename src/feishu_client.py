@@ -36,7 +36,7 @@ class FeishuClient:
         self.settings = settings
         self._tenant_access_token = ""
         self._token_expires_at = 0.0
-        self._field_names_cache: set[str] | None = None
+        self._field_names_cache: dict[tuple[str, str], set[str]] = {}
 
     def get_tenant_access_token(self) -> str:
         """获取并缓存 tenant_access_token。"""
@@ -70,15 +70,15 @@ class FeishuClient:
             "Content-Type": "application/json; charset=utf-8",
         }
 
-    def list_field_names(self) -> set[str]:
+    def list_field_names(self, app_token: str = "", table_id: str = "") -> set[str]:
         """读取当前 Bitable 表已有字段名。"""
-        if self._field_names_cache is not None:
-            return self._field_names_cache
+        app_token = app_token or self.settings.bitable_app_token
+        table_id = table_id or self.settings.table_id
+        cache_key = (app_token, table_id)
+        if cache_key in self._field_names_cache:
+            return self._field_names_cache[cache_key]
 
-        url = (
-            f"{self.BASE_URL}/bitable/v1/apps/{self.settings.bitable_app_token}"
-            f"/tables/{self.settings.table_id}/fields?page_size=100"
-        )
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/fields?page_size=100"
         field_names: set[str] = set()
         page_token = ""
         while True:
@@ -93,17 +93,17 @@ class FeishuClient:
                 data = response.json()
             except requests.RequestException as exc:
                 print(f"[WARN] 获取 Bitable 字段列表失败，将按完整字段尝试写入: {exc}", flush=True)
-                self._field_names_cache = set(REQUIRED_BITABLE_FIELDS)
-                return self._field_names_cache
+                self._field_names_cache[cache_key] = set(REQUIRED_BITABLE_FIELDS)
+                return self._field_names_cache[cache_key]
             except ValueError:
                 print("[WARN] 获取 Bitable 字段列表返回非 JSON，将按完整字段尝试写入", flush=True)
-                self._field_names_cache = set(REQUIRED_BITABLE_FIELDS)
-                return self._field_names_cache
+                self._field_names_cache[cache_key] = set(REQUIRED_BITABLE_FIELDS)
+                return self._field_names_cache[cache_key]
 
             if data.get("code") != 0:
                 print(f"[WARN] 获取 Bitable 字段列表失败，将按完整字段尝试写入: {data}", flush=True)
-                self._field_names_cache = set(REQUIRED_BITABLE_FIELDS)
-                return self._field_names_cache
+                self._field_names_cache[cache_key] = set(REQUIRED_BITABLE_FIELDS)
+                return self._field_names_cache[cache_key]
 
             for item in data.get("data", {}).get("items", []):
                 name = item.get("field_name")
@@ -115,20 +115,19 @@ class FeishuClient:
             if not page_token:
                 break
 
-        self._field_names_cache = field_names
+        self._field_names_cache[cache_key] = field_names
         return field_names
 
-    def has_dedupe_id(self, dedupe_id: str) -> bool:
+    def has_dedupe_id(self, dedupe_id: str, app_token: str = "", table_id: str = "") -> bool:
         """查询 Bitable 中是否已存在唯一去重 ID。"""
-        field_names = self.list_field_names()
+        app_token = app_token or self.settings.bitable_app_token
+        table_id = table_id or self.settings.table_id
+        field_names = self.list_field_names(app_token, table_id)
         if "唯一去重 ID" not in field_names:
             print("[WARN] 当前表缺少 `唯一去重 ID` 字段，本次将跳过去重直接写入。建议尽快补齐该字段。", flush=True)
             return False
 
-        url = (
-            f"{self.BASE_URL}/bitable/v1/apps/{self.settings.bitable_app_token}"
-            f"/tables/{self.settings.table_id}/records/search?page_size=1"
-        )
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/records/search?page_size=1"
         payload = {
             "filter": {
                 "conjunction": "and",
@@ -195,13 +194,154 @@ class FeishuClient:
             self._raise_message_error("回复飞书消息失败", data)
         return data
 
-    def create_bitable_record(self, bill: Bill) -> dict[str, Any]:
+    def resolve_wiki_obj_token(self, wiki_token: str) -> str:
+        """Resolve a wiki token to the underlying Bitable app token."""
+        url = f"{self.BASE_URL}/wiki/v2/spaces/get_node"
+        try:
+            response = requests.get(
+                url,
+                headers=self._headers(),
+                params={"token": wiki_token},
+                timeout=self.settings.request_timeout,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"调用飞书 wiki get_node 接口失败: {exc}") from exc
+        except ValueError as exc:
+            raise RuntimeError(f"飞书 wiki get_node 接口返回非 JSON 内容: {exc}") from exc
+        if response.status_code >= 400 or data.get("code") != 0:
+            raise RuntimeError(f"飞书 wiki get_node 接口返回错误: HTTP {response.status_code}; {data}")
+        node = data.get("data", {}).get("node", {})
+        obj_token = node.get("obj_token")
+        if not obj_token:
+            raise RuntimeError(f"飞书 wiki get_node 结果缺少 obj_token: {data}")
+        return str(obj_token)
+
+    def list_tables(self, app_token: str) -> list[dict[str, Any]]:
+        """List tables in a Bitable app."""
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables"
+        tables: list[dict[str, Any]] = []
+        page_token = ""
+        while True:
+            params: dict[str, Any] = {"page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                response = requests.get(url, headers=self._headers(), params=params, timeout=self.settings.request_timeout)
+                data = response.json()
+            except requests.RequestException as exc:
+                raise RuntimeError(f"读取 Bitable table 列表请求失败: {exc}") from exc
+            except ValueError as exc:
+                raise RuntimeError(f"读取 Bitable table 列表返回非 JSON 内容: {exc}") from exc
+            if response.status_code >= 400 or data.get("code") != 0:
+                self._raise_bitable_error(f"读取 Bitable table 列表失败 HTTP {response.status_code}", data)
+            tables.extend(data.get("data", {}).get("items", []))
+            if not data.get("data", {}).get("has_more"):
+                break
+            page_token = data.get("data", {}).get("page_token", "")
+            if not page_token:
+                break
+        return tables
+
+    def create_table(self, app_token: str, table_name: str) -> str:
+        """Create a Bitable table and return table_id."""
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables"
+        payload = {"table": {"name": table_name}}
+        try:
+            response = requests.post(url, headers=self._headers(), json=payload, timeout=self.settings.request_timeout)
+            data = response.json()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"创建 Bitable table 请求失败: {exc}") from exc
+        except ValueError as exc:
+            raise RuntimeError(f"创建 Bitable table 返回非 JSON 内容: {exc}") from exc
+        if response.status_code >= 400 or data.get("code") != 0:
+            self._raise_bitable_error(f"创建 Bitable table 失败 HTTP {response.status_code}", data)
+        table = data.get("data", {}).get("table", {})
+        table_id = table.get("table_id") or data.get("data", {}).get("table_id")
+        if not table_id:
+            raise RuntimeError(f"创建 Bitable table 成功但响应缺少 table_id: {data}")
+        self._field_names_cache.pop((app_token, str(table_id)), None)
+        return str(table_id)
+
+    def ensure_bitable_fields(self, app_token: str, table_id: str) -> None:
+        """Ensure all accounting fields exist in a table."""
+        existing = self.list_field_names(app_token, table_id)
+        for field in _required_field_payloads():
+            field_name = field["field_name"]
+            if field_name in existing:
+                continue
+            url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+            try:
+                response = requests.post(url, headers=self._headers(), json=field, timeout=self.settings.request_timeout)
+                data = response.json()
+            except requests.RequestException as exc:
+                raise RuntimeError(f"创建 Bitable 字段请求失败 {field_name}: {exc}") from exc
+            except ValueError as exc:
+                raise RuntimeError(f"创建 Bitable 字段返回非 JSON {field_name}: {exc}") from exc
+            if response.status_code >= 400 or data.get("code") != 0:
+                self._raise_bitable_error(f"创建 Bitable 字段失败 {field_name}", data)
+            existing.add(field_name)
+        self._field_names_cache[(app_token, table_id)] = existing
+
+    def list_records(self, app_token: str, table_id: str, page_size: int = 500) -> list[dict[str, Any]]:
+        """Read all records from a Bitable table."""
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        records: list[dict[str, Any]] = []
+        page_token = ""
+        while True:
+            params: dict[str, Any] = {"page_size": page_size}
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                response = requests.get(url, headers=self._headers(), params=params, timeout=self.settings.request_timeout)
+                data = response.json()
+            except requests.RequestException as exc:
+                raise RuntimeError(f"读取 Bitable 记录请求失败: {exc}") from exc
+            except ValueError as exc:
+                raise RuntimeError(f"读取 Bitable 记录返回非 JSON 内容: {exc}") from exc
+            if response.status_code >= 400 or data.get("code") != 0:
+                self._raise_bitable_error(f"读取 Bitable 记录失败 HTTP {response.status_code}", data)
+            records.extend(data.get("data", {}).get("items", []))
+            if not data.get("data", {}).get("has_more"):
+                break
+            page_token = data.get("data", {}).get("page_token", "")
+            if not page_token:
+                break
+        return records
+
+    def send_text_to_open_id(self, open_id: str, text: str) -> dict[str, Any]:
+        """Send a direct bot message to a Feishu user open_id."""
+        if not open_id:
+            raise RuntimeError("缺少 open_id，无法发送飞书私聊消息")
+        url = f"{self.BASE_URL}/im/v1/messages"
+        payload = {
+            "receive_id": open_id,
+            "msg_type": "text",
+            "content": json_dumps({"text": text}),
+        }
+        try:
+            response = requests.post(
+                url,
+                headers=self._headers(),
+                params={"receive_id_type": "open_id"},
+                json=payload,
+                timeout=self.settings.request_timeout,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"发送飞书私聊消息请求失败: {exc}") from exc
+        except ValueError as exc:
+            raise RuntimeError(f"发送飞书私聊消息返回非 JSON 内容: {exc}") from exc
+        if response.status_code >= 400 or data.get("code") != 0:
+            self._raise_message_error(f"发送飞书私聊消息失败 HTTP {response.status_code}", data)
+        return data
+
+    def create_bitable_record(self, bill: Bill, app_token: str = "", table_id: str = "") -> dict[str, Any]:
         """向飞书多维表格写入一条账单记录。"""
-        url = (
-            f"{self.BASE_URL}/bitable/v1/apps/{self.settings.bitable_app_token}"
-            f"/tables/{self.settings.table_id}/records"
-        )
-        fields = self._filter_existing_fields(bill.to_bitable_fields())
+        app_token = app_token or self.settings.bitable_app_token
+        table_id = table_id or self.settings.table_id
+        url = f"{self.BASE_URL}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        fields = self._filter_existing_fields(bill.to_bitable_fields(), app_token, table_id)
         payload = {"fields": fields}
         try:
             response = requests.post(url, headers=self._headers(), json=payload, timeout=self.settings.request_timeout)
@@ -220,15 +360,15 @@ class FeishuClient:
             self._raise_bitable_error("写入 Bitable 失败", data)
         return data
 
-    def save_bill_once(self, bill: Bill) -> tuple[bool, dict[str, Any] | None]:
+    def save_bill_once(self, bill: Bill, app_token: str = "", table_id: str = "") -> tuple[bool, dict[str, Any] | None]:
         """按唯一去重 ID 写入账单，已存在则跳过。"""
-        if self.has_dedupe_id(bill.dedupe_id):
+        if self.has_dedupe_id(bill.dedupe_id, app_token, table_id):
             return False, None
-        return True, self.create_bitable_record(bill)
+        return True, self.create_bitable_record(bill, app_token, table_id)
 
-    def _filter_existing_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def _filter_existing_fields(self, fields: dict[str, Any], app_token: str = "", table_id: str = "") -> dict[str, Any]:
         """只写入当前表已存在的字段；必要时降级写入默认文本列。"""
-        existing_fields = self.list_field_names()
+        existing_fields = self.list_field_names(app_token, table_id)
         filtered = {key: value for key, value in fields.items() if key in existing_fields}
         missing = [key for key in fields if key not in existing_fields]
         if missing:
@@ -321,3 +461,22 @@ class FeishuClient:
                 "或者手动在多维表格中创建 README 里列出的字段。"
             )
         raise RuntimeError(f"{prefix}: {data}")
+
+
+def _required_field_payloads() -> list[dict[str, Any]]:
+    """Return Bitable field creation payloads for accounting tables."""
+    return [
+        {"field_name": "日期", "type": 1},
+        {"field_name": "时间", "type": 1},
+        {"field_name": "类型", "type": 1},
+        {"field_name": "金额", "type": 2},
+        {"field_name": "币种", "type": 1},
+        {"field_name": "分类", "type": 1},
+        {"field_name": "支付方式", "type": 1},
+        {"field_name": "商户或对象", "type": 1},
+        {"field_name": "备注", "type": 1},
+        {"field_name": "原始文本", "type": 1},
+        {"field_name": "记录来源", "type": 1},
+        {"field_name": "创建时间", "type": 1},
+        {"field_name": "唯一去重 ID", "type": 1},
+    ]

@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
+from user_registry import extract_user_identity
 from utils import build_external_dedupe_id, json_dumps
 
 BILL_REPLY_FIELDS = [
@@ -84,6 +85,9 @@ _AT_MENTION_RE = re.compile(r"<at\b[^>]*>.*?</at>", re.IGNORECASE | re.DOTALL)
 
 def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
     """根据记账结果生成飞书回复文案。"""
+    if result.get("reply"):
+        return str(result["reply"])
+
     bill = result.get("bill") if isinstance(result.get("bill"), dict) else {}
     if result.get("queued"):
         title = "记账失败，已保存到本地待重试队列。"
@@ -102,6 +106,9 @@ def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
         lines.append("")
         lines.append("本次记录：")
         lines.extend(_format_bill_summary_lines(bill))
+    table_url = str(result.get("table_url") or table_url)
+    if result.get("month_key"):
+        lines.append(f"月份：{result['month_key']}")
     if table_url:
         lines.append("")
         lines.append(f"查看完整记账表格：{table_url}")
@@ -202,6 +209,7 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 return
 
             text, source, message_id = extract_message_info(payload)
+            identity = extract_user_identity(payload)
             if not text:
                 event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
                 message = event.get("message") if isinstance(event.get("message"), dict) else {}
@@ -218,6 +226,13 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
 
             print(f"[INFO] 提取到飞书记账文本: {text} source={source}", flush=True)
             event_dedupe_id = build_external_dedupe_id("feishu_message", message_id) if message_id else ""
+            if event_dedupe_id and service.db.has_processed_event(event_dedupe_id):
+                print(
+                    f"[INFO] 忽略飞书重复投递: message_id={message_id}, reason=duplicate_persisted",
+                    flush=True,
+                )
+                self._send_json(200, {"ok": True, "ignored": True, "reason": "duplicate_persisted"})
+                return
             duplicate_reason = self._mark_message_processing(message_id) if message_id else ""
             if duplicate_reason:
                 print(
@@ -227,7 +242,7 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 self._send_json(200, {"ok": True, "ignored": True, "reason": duplicate_reason})
                 return
             try:
-                result = service.handle_text(text, source=source, dedupe_id=event_dedupe_id)
+                result = service.handle_user_text(text, identity=identity, source=source, dedupe_id=event_dedupe_id)
                 print(
                     f"[INFO] 飞书记账处理完成: created={result.get('created')}, queued={result.get('queued')}, dedupe_id={result.get('dedupe_id')}",
                     flush=True,
@@ -235,12 +250,16 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 reply_text = build_accounting_reply(result, service.feishu_client.settings.bitable_view_url)
                 print(f"[INFO] 准备回复飞书消息: message_id={message_id}, reply_preview={reply_text[:120]}", flush=True)
                 self._reply_to_message(message_id, reply_text)
+                if event_dedupe_id:
+                    service.db.mark_event_processed(event_dedupe_id, tenant_key=identity.tenant_key, open_id=identity.open_id)
                 self._send_json(200, {"ok": True, **result})
             except Exception as exc:  # noqa: BLE001 - 入口层需要兜底打印清晰错误
                 print(f"[ERROR] 处理飞书事件失败: {exc}", flush=True)
                 reply_text = build_exception_reply(exc, service.feishu_client.settings.bitable_view_url)
                 print(f"[INFO] 准备回复飞书失败消息: message_id={message_id}, reply_preview={reply_text[:120]}", flush=True)
                 self._reply_to_message(message_id, reply_text)
+                if event_dedupe_id:
+                    service.db.mark_event_processed(event_dedupe_id, tenant_key=identity.tenant_key, open_id=identity.open_id, status="failed")
                 self._send_json(200, {"ok": False, "error": str(exc)})
             finally:
                 if message_id:

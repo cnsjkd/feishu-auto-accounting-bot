@@ -145,7 +145,7 @@ def get_settings() -> Settings:
         llm_provider=_env("LLM_PROVIDER", "fallback").lower(),
         llm_configs=llm_configs,
         server_host=_env("SERVER_HOST", "0.0.0.0"),
-        server_port=int(_env("SERVER_PORT", "8000")),
+        server_port=int(_env("PORT") or _env("SERVER_PORT", "8000")),
         request_timeout=int(_env("REQUEST_TIMEOUT", "30")),
         llm_timeout=int(_env("LLM_TIMEOUT", "60")),
         llm_max_retries=max(1, int(_env("LLM_MAX_RETRIES", "2"))),

@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Python
 __pycache__/
@@ -15,6 +16,8 @@ env/
 
 # Local runtime data
 data/*.jsonl
+data/*.db
+data/*.db-*
 !data/.gitkeep
 
 # Logs and temporary files

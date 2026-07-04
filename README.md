@@ -1,4 +1,4 @@
-# 飞书 Bitable 自动记账系统（第一版）
+# 飞书 Bitable 自动记账系统
 
 ## 第一步：整体技术方案
 
@@ -143,8 +143,10 @@ OPENAI_API_BASE=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 
 SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
-REQUEST_TIMEOUT=20
+SERVER_PORT=18000
+REQUEST_TIMEOUT=30
+LLM_TIMEOUT=60
+LLM_MAX_RETRIES=2
 ```
 
 Bitable 参数获取方式：
@@ -243,7 +245,7 @@ GET  http://你的域名或公网地址/health
 飞书事件订阅要求公网 HTTPS 地址。开发阶段可用内网穿透工具，例如：
 
 ```bash
-ngrok http 8000
+ngrok http 18000
 ```
 
 然后在飞书事件订阅中配置：
@@ -254,10 +256,151 @@ https://xxxx.ngrok-free.app/feishu/events
 
 生产部署建议：
 
-- 轻量云服务器 + systemd/supervisor 常驻运行。
+- 轻量云服务器 + Docker Compose 常驻运行。
 - 反向代理：Nginx/Caddy，开启 HTTPS。
-- 使用环境变量或 `.env` 管理密钥。
+- 使用环境变量或 `.env.production` 管理密钥。
 - 定期查看服务日志，捕获 GPT 解析失败、Bitable 权限失败等异常。
+
+### 7. Docker 长期运行部署
+
+复制生产配置模板：
+
+```bash
+cp .env.production.example .env.production
+```
+
+编辑 `.env.production` 后启动：
+
+```bash
+cd deploy
+docker compose up -d --build
+```
+
+服务会通过 `restart: unless-stopped` 常驻运行；容器异常退出后会自动重启。建议用 Caddy/Nginx 把固定域名反向代理到本机 `18000`，然后在飞书事件订阅里填：
+
+```text
+https://你的域名/feishu/events
+```
+
+如果使用 Caddy，可参考 `deploy/Caddyfile.example`。
+
+### 8. Railway 部署（无自有域名方案）
+
+如果没有自己的域名，可以用 Railway 自带的 HTTPS 域名长期运行服务。
+
+部署前提：当前代码需要先提交并推送到 GitHub，然后在 Railway 从仓库导入。
+
+1. 在 Railway 新建 Project，选择 `Deploy from GitHub repo`。
+2. 选择仓库：`cnsjkd/feishu-auto-accounting-bot`。
+3. Railway 会读取根目录 `Dockerfile` 和 `railway.json` 自动部署。
+4. 在服务 Variables 中配置环境变量，至少包括：
+
+```text
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+BITABLE_APP_TOKEN=bascnxxxxxxxxxxxxxxxx
+TABLE_ID=tblxxxxxxxxxxxxxx
+BITABLE_VIEW_URL=https://xxxx.feishu.cn/base/xxxx?table=tblxxx&view=vewxxx
+LLM_PROVIDER=fallback
+QWEN_API_KEY=sk-xxxxxxxxxxxxxxxx
+QWEN_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen3.7-plus
+REQUEST_TIMEOUT=30
+LLM_TIMEOUT=60
+LLM_MAX_RETRIES=2
+```
+
+5. 创建 Railway Volume，并挂载到：
+
+```text
+/app/data
+```
+
+这样 SQLite 的用户绑定、月度 table 映射、事件幂等和月报记录会持久保存。也可以显式设置：
+
+```text
+ACCOUNTING_DB_PATH=/app/data/accounting.db
+```
+
+6. 打开 Railway 服务的 Public Networking，生成公开 HTTPS 域名，例如：
+
+```text
+https://feishu-auto-accounting-bot-production.up.railway.app
+```
+
+7. 飞书开放平台事件订阅请求地址填写：
+
+```text
+https://feishu-auto-accounting-bot-production.up.railway.app/feishu/events
+```
+
+8. 保存并校验通过后，在飞书机器人聊天中发送：
+
+```text
+绑定账本 <你的飞书多维表格链接>
+```
+
+注意：Railway 会自动注入 `PORT`，程序会优先监听该端口；本地仍可使用 `SERVER_PORT=18000`。
+
+### 9. 多用户接入和数据隔离
+
+每个飞书用户第一次使用时，在机器人聊天里发送：
+
+```text
+绑定账本 https://xxx.feishu.cn/base/<BITABLE_APP_TOKEN>?table=<TABLE_ID>&view=<VIEW_ID>
+```
+
+或发送 wiki 多维表格链接：
+
+```text
+绑定账本 https://xxx.feishu.cn/wiki/<WIKI_TOKEN>?table=<TABLE_ID>&view=<VIEW_ID>
+```
+
+系统会用飞书 `tenant_key + open_id` 作为用户身份，把该用户绑定到自己的 Bitable app。之后：
+
+- 用户 A 的账单只写入 A 绑定的表格。
+- 用户 B 的账单只写入 B 绑定的表格。
+- 同一机器人服务多个飞书用户时，数据不会混在一起。
+- 本地 SQLite 数据库保存在 `data/accounting.db`，用于保存用户绑定、月度 table 映射、事件幂等和月报发送记录。
+
+其他命令：
+
+```text
+账本状态
+帮助
+```
+
+### 10. 月度表和自动月报
+
+系统按账单日期自动选择月份：
+
+```text
+2026-07 -> 写入名为 2026-07 的 table
+2026-08 -> 写入名为 2026-08 的 table
+```
+
+如果当月 table 不存在，系统会在用户绑定的 Bitable app 里自动创建同名 table，并自动创建记账字段。
+
+服务启动后会开启内置定时任务：每月 1 日自动统计上个月数据，并私聊对应用户发送月报。月报包括：
+
+- 总收入
+- 总支出
+- 结余
+- 支出分类统计
+- 最大单笔支出
+- 本月记录笔数
+
+也可以手动验证指定月份月报：
+
+```bash
+python src/main.py --run-monthly-summary 2026-07
+```
+
+如果需要实际发送给用户，加：
+
+```bash
+python src/main.py --run-monthly-summary 2026-07 --send-summary
+```
 
 ## 第五步：飞书开放平台权限配置说明
 
