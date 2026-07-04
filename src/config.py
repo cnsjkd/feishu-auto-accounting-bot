@@ -51,6 +51,7 @@ class Settings:
     feishu_app_secret: str
     bitable_app_token: str
     table_id: str
+    bitable_view_url: str
     llm_provider: str
     llm_configs: dict[str, LLMConfig]
     server_host: str = "0.0.0.0"
@@ -140,6 +141,7 @@ def get_settings() -> Settings:
         feishu_app_secret=os.environ["FEISHU_APP_SECRET"],
         bitable_app_token=os.environ["BITABLE_APP_TOKEN"],
         table_id=os.environ["TABLE_ID"],
+        bitable_view_url=_env("BITABLE_VIEW_URL"),
         llm_provider=_env("LLM_PROVIDER", "fallback").lower(),
         llm_configs=llm_configs,
         server_host=_env("SERVER_HOST", "0.0.0.0"),

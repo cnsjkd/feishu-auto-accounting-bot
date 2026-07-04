@@ -131,6 +131,8 @@ FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 BITABLE_APP_TOKEN=bascnxxxxxxxxxxxxxxxx
 TABLE_ID=tblxxxxxxxxxxxxxx
+# 可选：机器人回复中附上的多维表格查看链接
+BITABLE_VIEW_URL=https://xxx.feishu.cn/base/<BITABLE_APP_TOKEN>?table=<TABLE_ID>&view=<VIEW_ID>
 
 LLM_PROVIDER=fallback
 QWEN_API_KEY=sk-xxxxxxxxxxxxxxxx
@@ -152,6 +154,7 @@ Bitable 参数获取方式：
 - `/base/` 后面的 `bascn...` 或 `base...` 填入 `BITABLE_APP_TOKEN`。
 - `table=` 后面的 `tbl...` 填入 `TABLE_ID`。
 - 如果地址栏没有 `table=`，先点击要写入的那张数据表，再复制完整地址。
+- `BITABLE_VIEW_URL` 可直接填浏览器里能打开的多维表格链接，用于机器人记账后回复给你，方便点开核对。
 - 如果链接是 `https://xxx.feishu.cn/wiki/<WIKI_TOKEN>?table=tbl...`，说明多维表格放在知识库里，不能直接从地址拿到 `BITABLE_APP_TOKEN`；请运行：
 
 ```bash
@@ -270,6 +273,7 @@ https://xxxx.ngrok-free.app/feishu/events
 2. 在「权限管理」中添加机器人消息权限：
    - `im:message.p2p_msg:readonly`：读取用户发给机器人的单聊消息。
    - `im:message.group_at_msg:readonly`：读取群聊中 @ 机器人的消息，群聊记账才需要。
+   - `im:message:send_as_bot`：以机器人身份发送消息，用于记账成功/失败后在聊天里回复结果。
 3. 进入「版本管理与发布」，创建版本并发布/安装到企业。
 4. 将机器人添加到单聊或群聊中。
 5. 如果飞书聊天页显示「暂时无法给该机器人发消息」，通常说明机器人能力未添加、应用未发布安装，或消息权限未开通；按以上步骤处理后重新打开机器人会话。

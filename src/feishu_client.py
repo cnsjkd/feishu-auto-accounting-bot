@@ -168,6 +168,33 @@ class FeishuClient:
         items = data.get("data", {}).get("items", [])
         return len(items) > 0
 
+    def reply_message(self, message_id: str, text: str) -> dict[str, Any]:
+        """回复飞书消息。"""
+        if not message_id:
+            raise RuntimeError("缺少 message_id，无法回复飞书消息")
+
+        url = f"{self.BASE_URL}/im/v1/messages/{message_id}/reply"
+        payload = {
+            "msg_type": "text",
+            "content": json_dumps({"text": text}),
+        }
+        try:
+            response = requests.post(url, headers=self._headers(), json=payload, timeout=self.settings.request_timeout)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"飞书消息回复接口返回非 JSON 内容: HTTP {response.status_code}; {response.text}"
+                ) from exc
+            if response.status_code >= 400:
+                self._raise_message_error(f"回复飞书消息失败 HTTP {response.status_code}", data)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"回复飞书消息请求失败: {exc}") from exc
+
+        if data.get("code") != 0:
+            self._raise_message_error("回复飞书消息失败", data)
+        return data
+
     def create_bitable_record(self, bill: Bill) -> dict[str, Any]:
         """向飞书多维表格写入一条账单记录。"""
         url = (
@@ -245,6 +272,18 @@ class FeishuClient:
         detail = str(data.get("error", {}).get("message", ""))
         combined = f"{message} {detail}"
         return "not found field_name" in combined or ("field_name" in combined and "not found" in combined)
+
+    def _raise_message_error(self, prefix: str, data: dict[str, Any]) -> None:
+        """把飞书消息回复常见错误转换为可操作提示。"""
+        message = str(data.get("msg") or data.get("error", {}).get("message") or data)
+        detail = data.get("error", {}).get("message", "")
+        combined = f"{message} {detail}"
+        if "im:message" in combined or "Forbidden" in combined or str(data.get("code")) in {"99991663", "230027"}:
+            raise RuntimeError(
+                f"{prefix}: 应用缺少回复消息权限或未发布生效。"
+                "请在飞书开放平台权限管理中添加 `im:message:send_as_bot`，发布新版本并重新安装应用。"
+            )
+        raise RuntimeError(f"{prefix}: {data}")
 
     def _raise_bitable_error(self, prefix: str, data: dict[str, Any]) -> None:
         """把飞书 Bitable 常见错误转换为可操作提示。"""

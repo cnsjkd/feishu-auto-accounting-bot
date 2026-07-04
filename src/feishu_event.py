@@ -12,12 +12,25 @@ from typing import TYPE_CHECKING, Any
 
 from utils import json_dumps
 
+BILL_REPLY_FIELDS = [
+    "日期",
+    "时间",
+    "类型",
+    "金额",
+    "币种",
+    "分类",
+    "支付方式",
+    "商户或对象",
+    "备注",
+    "原始文本",
+]
+
 if TYPE_CHECKING:
     from service import AccountingService
 
 
-def extract_message_text(payload: dict[str, Any]) -> tuple[str, str]:
-    """从飞书事件回调 payload 中提取消息文本和来源描述。"""
+def extract_message_info(payload: dict[str, Any]) -> tuple[str, str, str]:
+    """从飞书事件回调 payload 中提取消息文本、来源描述和 message_id。"""
     # 飞书事件订阅 v2.0 格式：{"event":{"message":...}}
     # 部分场景或旧版回调可能把 message 放在根级，兼容读取。
     event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
@@ -33,7 +46,7 @@ def extract_message_text(payload: dict[str, Any]) -> tuple[str, str]:
 
     message_type = message.get("message_type") or message.get("msg_type")
     if message_type != "text":
-        return "", f"飞书机器人:{message_type or 'unknown'}"
+        return "", f"飞书机器人:{message_type or 'unknown'}", ""
 
     content = message.get("content") or "{}"
     try:
@@ -54,10 +67,60 @@ def extract_message_text(payload: dict[str, Any]) -> tuple[str, str]:
     message_id = message.get("message_id") or message.get("open_message_id") or message.get("uuid") or ""
     source_prefix = "飞书机器人旧版事件" if legacy_message else "飞书机器人"
     source = f"{source_prefix}:{message_id}" if message_id else source_prefix
+    return text, source, str(message_id)
+
+
+def extract_message_text(payload: dict[str, Any]) -> tuple[str, str]:
+    """从飞书事件回调 payload 中提取消息文本和来源描述。"""
+    text, source, _message_id = extract_message_info(payload)
     return text, source
 
 
 _AT_MENTION_RE = re.compile(r"<at\b[^>]*>.*?</at>", re.IGNORECASE | re.DOTALL)
+
+
+def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
+    """根据记账结果生成飞书回复文案。"""
+    bill = result.get("bill") if isinstance(result.get("bill"), dict) else {}
+    if result.get("queued"):
+        title = "记账失败，已保存到本地待重试队列。"
+        reason = f"原因：{result.get('error', '未知错误')}"
+    elif result.get("created"):
+        title = "记账成功，已写入多维表格。"
+        reason = ""
+    else:
+        title = "这条账单已存在，本次没有重复写入。"
+        reason = ""
+
+    lines = [title]
+    if reason:
+        lines.append(reason)
+    if bill:
+        lines.append("")
+        lines.append("本次记录：")
+        lines.extend(_format_bill_summary_lines(bill))
+    if table_url:
+        lines.append("")
+        lines.append(f"查看完整记账表格：{table_url}")
+    return "\n".join(lines)
+
+
+def build_exception_reply(error: Exception, table_url: str = "") -> str:
+    """生成未进入业务结果时的异常回复。"""
+    lines = ["记账失败，未写入多维表格。", f"原因：{error}"]
+    if table_url:
+        lines.append("")
+        lines.append(f"查看记账表格：{table_url}")
+    return "\n".join(lines)
+
+
+def _format_bill_summary_lines(bill: dict[str, Any]) -> list[str]:
+    lines = []
+    for field in BILL_REPLY_FIELDS:
+        value = bill.get(field)
+        if value not in (None, ""):
+            lines.append(f"- {field}：{value}")
+    return lines
 
 
 def _clean_feishu_text(text: str) -> str:
@@ -117,7 +180,7 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                 self._send_json(404, {"ok": False, "error": "not found"})
                 return
 
-            text, source = extract_message_text(payload)
+            text, source, message_id = extract_message_info(payload)
             if not text:
                 event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
                 message = event.get("message") if isinstance(event.get("message"), dict) else {}
@@ -139,13 +202,26 @@ def make_handler(service: "AccountingService") -> type[BaseHTTPRequestHandler]:
                     f"[INFO] 飞书记账处理完成: created={result.get('created')}, queued={result.get('queued')}, dedupe_id={result.get('dedupe_id')}",
                     flush=True,
                 )
+                self._reply_to_message(message_id, build_accounting_reply(result, service.feishu_client.settings.bitable_view_url))
                 self._send_json(200, {"ok": True, **result})
             except Exception as exc:  # noqa: BLE001 - 入口层需要兜底打印清晰错误
                 print(f"[ERROR] 处理飞书事件失败: {exc}", flush=True)
+                self._reply_to_message(message_id, build_exception_reply(exc, service.feishu_client.settings.bitable_view_url))
                 self._send_json(200, {"ok": False, "error": str(exc)})
 
         def log_message(self, format: str, *args: Any) -> None:
             print(f"[HTTP] {self.address_string()} - {format % args}", flush=True)
+
+        def _reply_to_message(self, message_id: str, text: str) -> None:
+            """尽力回复飞书消息，回复失败不影响事件确认。"""
+            if not message_id:
+                print("[WARN] 飞书事件缺少 message_id，无法回复聊天消息。", flush=True)
+                return
+            try:
+                service.feishu_client.reply_message(message_id, text)
+                print(f"[INFO] 已回复飞书消息: message_id={message_id}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - 回复失败不应触发飞书重试整个事件
+                print(f"[ERROR] 回复飞书消息失败: {exc}", flush=True)
 
         def _extract_challenge(self, payload: dict[str, Any]) -> str:
             """提取飞书 URL verification challenge。"""
