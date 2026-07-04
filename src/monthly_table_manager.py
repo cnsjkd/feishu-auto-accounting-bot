@@ -6,6 +6,7 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from db import AccountingDB, MonthlyTable, UserBinding
+from utils import beijing_today
 
 if TYPE_CHECKING:
     from feishu_client import FeishuClient
@@ -51,4 +52,4 @@ def month_key_from_date(value: str) -> str:
     try:
         return date.fromisoformat(value).strftime("%Y-%m")
     except ValueError:
-        return date.today().strftime("%Y-%m")
+        return beijing_today().strftime("%Y-%m")

@@ -5,28 +5,45 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 
 SUPPORTED_TYPES = {"收入", "支出"}
-SUPPORTED_CATEGORIES = {"餐饮", "交通", "购物", "住宿", "工资", "报销", "其他"}
+SUPPORTED_CATEGORIES = {"餐饮", "交通", "购物", "住宿", "工资", "报销", "投资", "烟酒", "娱乐", "医疗", "教育", "其他"}
 SUPPORTED_PAYMENTS = {"微信", "支付宝", "银行卡", "现金", "其他"}
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def beijing_now() -> datetime:
+    """返回带 UTC+8 时区信息的北京时间。"""
+    return datetime.now(BEIJING_TZ)
+
+
+def beijing_today() -> date:
+    """返回北京时间日期。"""
+    return beijing_now().date()
+
+
+def beijing_now_iso() -> str:
+    """返回北京时间 ISO 字符串，包含 +08:00 偏移。"""
+    return beijing_now().isoformat(timespec="seconds")
 
 
 def today_context() -> dict[str, str]:
-    """返回解析自然语言账单时需要的当前日期上下文。"""
-    now = datetime.now()
+    """返回解析自然语言账单时需要的北京时间日期上下文。"""
+    now = beijing_now()
+    today = now.date()
     return {
-        "today": now.date().isoformat(),
-        "yesterday": (now.date() - timedelta(days=1)).isoformat(),
-        "tomorrow": (now.date() + timedelta(days=1)).isoformat(),
+        "timezone": "Asia/Shanghai",
+        "today": today.isoformat(),
+        "yesterday": (today - timedelta(days=1)).isoformat(),
+        "tomorrow": (today + timedelta(days=1)).isoformat(),
         "now_time": now.strftime("%H:%M:%S"),
     }
 
 
-def extract_json_object(text: str) -> dict[str, Any]:
-    """从大模型输出中提取第一个 JSON 对象。"""
+def _clean_json_text(text: str) -> str:
     cleaned = text.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned.removeprefix("```json").strip()
@@ -34,21 +51,66 @@ def extract_json_object(text: str) -> dict[str, Any]:
         cleaned = cleaned.removeprefix("```").strip()
     if cleaned.endswith("```"):
         cleaned = cleaned.removesuffix("```").strip()
+    return cleaned
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    """从大模型输出中提取第一个 JSON 对象。"""
+    data = extract_json_value(text)
+    if not isinstance(data, dict):
+        raise ValueError("模型返回 JSON 不是对象")
+    return data
+
+
+def extract_json_value(text: str) -> Any:
+    """从大模型输出中提取 JSON 对象或数组。"""
+    cleaned = _clean_json_text(text)
 
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict):
+        if isinstance(data, (dict, list)):
             return data
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", cleaned, flags=re.S)
-    if not match:
-        raise ValueError("模型返回内容中未找到 JSON 对象")
-    data = json.loads(match.group(0))
-    if not isinstance(data, dict):
-        raise ValueError("模型返回 JSON 不是对象")
-    return data
+    for pattern in (r"\{.*\}", r"\[.*\]"):
+        match = re.search(pattern, cleaned, flags=re.S)
+        if match:
+            data = json.loads(match.group(0))
+            if isinstance(data, (dict, list)):
+                return data
+    raise ValueError("模型返回内容中未找到 JSON 对象或数组")
+
+
+def extract_bill_items(data: Any) -> list[dict[str, Any]]:
+    """从模型返回值中提取账单明细列表，兼容单对象和数组。"""
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = []
+        for key in ("账单列表", "账单", "bills", "items", "records"):
+            value = data.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+        if not items:
+            items = [data]
+    else:
+        raise ValueError("模型返回 JSON 必须是账单对象或账单数组")
+
+    bill_items = [item for item in items if isinstance(item, dict)]
+    if not bill_items:
+        raise ValueError("模型返回中没有可用的账单明细")
+    return bill_items
+
+
+def normalize_bill_items(data: Any, original_text: str, source: str) -> list[dict[str, Any]]:
+    """标准化模型返回的一条或多条账单。"""
+    normalized_items: list[dict[str, Any]] = []
+    for item in extract_bill_items(data):
+        item_original_text = str(item.get("原始文本") or item.get("original_text") or original_text).strip()
+        normalized_items.append(normalize_bill_data(item, item_original_text or original_text, source))
+    return normalized_items
 
 
 def normalize_bill_data(data: dict[str, Any], original_text: str, source: str) -> dict[str, Any]:
@@ -123,6 +185,26 @@ def build_dedupe_id(bill_data: dict[str, Any]) -> str:
 def build_external_dedupe_id(namespace: str, external_id: str) -> str:
     """根据外部事件 ID 生成稳定去重 ID。"""
     raw = f"{namespace}:{external_id.strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def build_child_dedupe_id(parent_dedupe_id: str, index: int, bill_data: dict[str, Any]) -> str:
+    """为同一条外部消息中的多笔账单生成稳定子去重 ID。"""
+    if not parent_dedupe_id:
+        return build_dedupe_id(bill_data)
+    raw = "|".join(
+        [
+            parent_dedupe_id,
+            str(index),
+            str(bill_data.get("日期", "")),
+            str(bill_data.get("时间", "")),
+            str(bill_data.get("类型", "")),
+            str(bill_data.get("金额", "")),
+            str(bill_data.get("币种", "")),
+            str(bill_data.get("商户或对象", "")),
+            str(bill_data.get("备注", "")),
+        ]
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 

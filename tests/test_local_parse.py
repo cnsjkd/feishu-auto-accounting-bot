@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from models import Bill  # noqa: E402
-from utils import build_dedupe_id, normalize_bill_data  # noqa: E402
+from utils import build_child_dedupe_id, build_dedupe_id, normalize_bill_data, normalize_bill_items  # noqa: E402
 
 
 def main() -> int:
@@ -44,6 +44,22 @@ def main() -> int:
     assert fields["金额"] == 38.5
     assert fields["时间"] == "12:30:00"
     assert fields["唯一去重 ID"] == dedupe_id
+
+    multi = normalize_bill_items(
+        {
+            "账单列表": [
+                {"日期": "2026-07-04", "时间": "15:08:44", "类型": "支出", "金额": 3, "分类": "餐饮", "商户或对象": "米饭", "原始文本": "米饭3元"},
+                {"日期": "2026-07-04", "时间": "15:08:44", "类型": "支出", "金额": 15, "分类": "烟酒", "商户或对象": "烟", "原始文本": "烟15元"},
+                {"日期": "2026-07-04", "时间": "15:08:44", "类型": "支出", "金额": 286, "分类": "投资", "商户或对象": "基金", "备注": "亏损", "原始文本": "基金亏损286元"},
+            ]
+        },
+        "今天吃了米饭3元，烟15，基金亏损286",
+        "测试",
+    )
+    assert len(multi) == 3
+    assert [item["金额"] for item in multi] == [3.0, 15.0, 286.0]
+    assert [item["分类"] for item in multi] == ["餐饮", "烟酒", "投资"]
+    assert len({build_child_dedupe_id("msg_multi", index, item) for index, item in enumerate(multi, start=1)}) == 3
     print("本地轻量测试通过")
     return 0
 

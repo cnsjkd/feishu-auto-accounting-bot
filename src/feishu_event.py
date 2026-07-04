@@ -88,6 +88,13 @@ def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
     if result.get("reply"):
         return str(result["reply"])
 
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    if items:
+        return _build_multi_bill_reply(result, table_url)
+    return _build_single_bill_reply(result, table_url)
+
+
+def _build_single_bill_reply(result: dict[str, Any], table_url: str = "") -> str:
     bill = result.get("bill") if isinstance(result.get("bill"), dict) else {}
     if result.get("queued"):
         title = "记账失败，已保存到本地待重试队列。"
@@ -106,13 +113,59 @@ def build_accounting_reply(result: dict[str, Any], table_url: str = "") -> str:
         lines.append("")
         lines.append("本次记录：")
         lines.extend(_format_bill_summary_lines(bill))
+    _append_table_info(lines, result, table_url)
+    return "\n".join(lines)
+
+
+def _build_multi_bill_reply(result: dict[str, Any], table_url: str = "") -> str:
+    items = [item for item in result.get("items", []) if isinstance(item, dict)]
+    created_count = int(result.get("created_count") or 0)
+    queued_count = int(result.get("queued_count") or 0)
+    duplicate_count = int(result.get("duplicate_count") or 0)
+    if created_count and not queued_count and not duplicate_count:
+        title = f"记账成功，已识别 {len(items)} 笔账单。"
+    elif created_count:
+        title = f"记账部分完成，已识别 {len(items)} 笔账单。"
+    elif queued_count:
+        title = f"记账失败，已识别 {len(items)} 笔账单，已保存到本地待重试队列。"
+    else:
+        title = f"这批账单已存在，已识别 {len(items)} 笔，本次没有重复写入。"
+    lines = [
+        title,
+        f"写入成功：{created_count} 笔；待重试：{queued_count} 笔；重复跳过：{duplicate_count} 笔。",
+    ]
+    if queued_count:
+        first_error = next((str(item.get("error")) for item in items if item.get("queued") and item.get("error")), "未知错误")
+        lines.append(f"失败原因示例：{first_error[:200]}")
+    lines.append("")
+    lines.append("本次明细：")
+    for index, item in enumerate(items, start=1):
+        bill = item.get("bill") if isinstance(item.get("bill"), dict) else {}
+        status = "成功" if item.get("created") else "待重试" if item.get("queued") else "重复"
+        lines.append(f"{index}. {status}｜{_format_bill_one_line(bill)}")
+    _append_table_info(lines, result, table_url)
+    return "\n".join(lines)
+
+
+def _append_table_info(lines: list[str], result: dict[str, Any], table_url: str = "") -> None:
     table_url = str(result.get("table_url") or table_url)
-    if result.get("month_key"):
-        lines.append(f"月份：{result['month_key']}")
+    month_keys = _collect_month_keys(result)
+    if month_keys:
+        lines.append(f"月份：{', '.join(month_keys)}")
     if table_url:
         lines.append("")
         lines.append(f"查看完整记账表格：{table_url}")
-    return "\n".join(lines)
+
+
+def _collect_month_keys(result: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    for item in items:
+        if isinstance(item, dict) and item.get("month_key") and str(item["month_key"]) not in keys:
+            keys.append(str(item["month_key"]))
+    if not keys and result.get("month_key"):
+        keys.append(str(result["month_key"]))
+    return keys
 
 
 def build_exception_reply(error: Exception, table_url: str = "") -> str:
@@ -144,6 +197,20 @@ def _format_bill_summary_lines(bill: dict[str, Any]) -> list[str]:
         if value not in (None, ""):
             lines.append(f"- {field}：{value}")
     return lines
+
+
+def _format_bill_one_line(bill: dict[str, Any]) -> str:
+    if not bill:
+        return "账单明细为空"
+    date_text = str(bill.get("日期") or "")
+    bill_type = str(bill.get("类型") or "")
+    amount = str(bill.get("金额") or "")
+    currency = str(bill.get("币种") or "CNY")
+    category = str(bill.get("分类") or "")
+    merchant = str(bill.get("商户或对象") or "")
+    note = str(bill.get("备注") or "")
+    subject = merchant or note or str(bill.get("原始文本") or "")
+    return f"{date_text} {bill_type} {amount} {currency}｜{category}｜{subject}".strip()
 
 
 def _clean_feishu_text(text: str) -> str:

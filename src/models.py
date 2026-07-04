@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
+
+from utils import beijing_now_iso
 
 
 @dataclass
@@ -21,7 +22,7 @@ class Bill:
     original_text: str
     source: str
     dedupe_id: str
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created_at: str = field(default_factory=beijing_now_iso)
 
     def to_bitable_fields(self) -> dict[str, Any]:
         """转换为飞书多维表格字段名到字段值的映射。"""

@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from config import PROJECT_ROOT
-from utils import json_dumps
+from utils import beijing_now_iso, json_dumps
 
 
 QUEUE_PATH = PROJECT_ROOT / "data" / "pending_bills.jsonl"
@@ -20,7 +19,7 @@ def append_pending_bill(bill_fields: dict[str, Any], error: str) -> Path:
     """把写入失败的账单追加到本地队列。"""
     QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "queued_at": datetime.now().isoformat(timespec="seconds"),
+        "queued_at": beijing_now_iso(),
         "error": error,
         "bill": bill_fields,
     }

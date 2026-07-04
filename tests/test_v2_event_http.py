@@ -28,10 +28,13 @@ class FakeParser:
     bills: list[Bill]
 
     def parse(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> Bill:
+        return self.parse_many(text, source=source, dedupe_id=dedupe_id)[0]
+
+    def parse_many(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> list[Bill]:
         template = self.bills.pop(0)
         template.source = source
         template.dedupe_id = dedupe_id or template.dedupe_id
-        return template
+        return [template]
 
 
 class FakeFeishuClient:

@@ -8,7 +8,7 @@ import requests
 
 from config import LLMConfig, Settings
 from models import Bill
-from utils import build_dedupe_id, extract_json_object, json_dumps, normalize_bill_data, today_context
+from utils import build_child_dedupe_id, build_dedupe_id, extract_json_value, json_dumps, normalize_bill_items, today_context
 
 
 class GPTBillParser:
@@ -16,32 +16,42 @@ class GPTBillParser:
         self.settings = settings
 
     def parse(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> Bill:
-        """调用配置的大模型，将自然语言账单解析为 Bill。"""
+        """调用配置的大模型，将自然语言账单解析为第一条 Bill，兼容旧接口。"""
+        return self.parse_many(text, source=source, dedupe_id=dedupe_id)[0]
+
+    def parse_many(self, text: str, source: str = "飞书机器人", dedupe_id: str = "") -> list[Bill]:
+        """调用配置的大模型，将自然语言账单解析为一条或多条 Bill。"""
         if not text or not text.strip():
             raise ValueError("待解析文本为空")
 
         result = self._call_with_fallback(text)
         try:
             content = result["choices"][0]["message"]["content"]
-            model_data = extract_json_object(content)
-            normalized = normalize_bill_data(model_data, original_text=text, source=source)
-            final_dedupe_id = dedupe_id or build_dedupe_id(normalized)
-            return Bill(
-                date=normalized["日期"],
-                time=normalized["时间"],
-                bill_type=normalized["类型"],
-                amount=normalized["金额"],
-                currency=normalized["币种"],
-                category=normalized["分类"],
-                payment_method=normalized["支付方式"],
-                merchant=normalized["商户或对象"],
-                note=normalized["备注"],
-                original_text=normalized["原始文本"],
-                source=normalized["记录来源"],
-                dedupe_id=final_dedupe_id,
-            )
+            model_data = extract_json_value(content)
+            normalized_items = normalize_bill_items(model_data, original_text=text, source=source)
+            return [
+                self._build_bill(normalized, dedupe_id, index)
+                for index, normalized in enumerate(normalized_items, start=1)
+            ]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise RuntimeError(f"解析大模型返回失败: {exc}; 原始返回: {result}") from exc
+
+    def _build_bill(self, normalized: dict[str, Any], parent_dedupe_id: str, index: int) -> Bill:
+        final_dedupe_id = build_child_dedupe_id(parent_dedupe_id, index, normalized) if parent_dedupe_id else build_dedupe_id(normalized)
+        return Bill(
+            date=normalized["日期"],
+            time=normalized["时间"],
+            bill_type=normalized["类型"],
+            amount=normalized["金额"],
+            currency=normalized["币种"],
+            category=normalized["分类"],
+            payment_method=normalized["支付方式"],
+            merchant=normalized["商户或对象"],
+            note=normalized["备注"],
+            original_text=normalized["原始文本"],
+            source=normalized["记录来源"],
+            dedupe_id=final_dedupe_id,
+        )
 
     def _call_with_fallback(self, text: str) -> dict[str, Any]:
         """按配置顺序调用模型，失败时自动尝试下一个。"""
@@ -69,18 +79,22 @@ class GPTBillParser:
         """调用 OpenAI 兼容 Chat Completions 接口。"""
         ctx = today_context()
         system_prompt = (
-            "你是一个个人记账解析器。请只输出一个 JSON 对象，不要输出解释。"
-            "字段必须包含：日期、时间、类型、金额、币种、分类、支付方式、商户或对象、备注。"
-            "类型只能是收入或支出。"
-            "分类只能是餐饮、交通、购物、住宿、工资、报销、其他。"
+            "你是一个个人记账解析器。请只输出 JSON，不要输出解释。"
+            "输出格式必须是 {\"账单列表\":[...]}，即使只有一笔也放入账单列表。"
+            "每条账单字段必须包含：日期、时间、类型、金额、币种、分类、支付方式、商户或对象、备注、原始文本。"
+            "如果用户一句话里有多笔账单、多个金额、多个对象或不同类别，必须拆成多条账单，不能合并金额或合并备注。"
+            "例如“米饭3元，烟15，基金亏损286”应输出三条：米饭3元、烟15元、基金亏损286元。"
+            "类型只能是收入或支出。亏损、花了、买了、支付、扣款都属于支出；到账、工资、报销到账属于收入。"
+            "分类只能是餐饮、交通、购物、住宿、工资、报销、投资、烟酒、娱乐、医疗、教育、其他。"
             "支付方式只能是微信、支付宝、银行卡、现金、其他。"
             "币种默认 CNY。金额必须是数字。"
-            "如果用户没有说明时间，用当前时间；没有说明日期，根据上下文判断，默认今天。"
+            "当前日期上下文使用北京时间 Asia/Shanghai。"
+            "如果用户没有说明时间，用北京时间当前时间；没有说明日期，根据上下文判断，默认北京时间今天。"
         )
         user_prompt = (
             f"当前日期上下文：{json_dumps(ctx)}\n"
             f"请解析这条记账消息：{text}\n"
-            "输出示例：{\"日期\":\"2026-07-02\",\"时间\":\"12:30:00\",\"类型\":\"支出\",\"金额\":38.5,\"币种\":\"CNY\",\"分类\":\"餐饮\",\"支付方式\":\"其他\",\"商户或对象\":\"美团外卖\",\"备注\":\"午餐\"}"
+            "输出示例：{\"账单列表\":[{\"日期\":\"2026-07-02\",\"时间\":\"12:30:00\",\"类型\":\"支出\",\"金额\":38.5,\"币种\":\"CNY\",\"分类\":\"餐饮\",\"支付方式\":\"其他\",\"商户或对象\":\"美团外卖\",\"备注\":\"午餐\",\"原始文本\":\"美团外卖38.5\"}]}"
         )
         payload = {
             "model": llm_config.model,

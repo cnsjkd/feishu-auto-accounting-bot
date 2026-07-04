@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date, datetime
 
 from monthly_summary import MonthlySummaryService
+from utils import beijing_now
 
 
 class MonthlySummaryScheduler:
@@ -37,8 +37,8 @@ class MonthlySummaryScheduler:
             self._stop_event.wait(300)
 
     def _run_if_due(self) -> None:
-        now = datetime.now()
-        today = date.today()
+        now = beijing_now()
+        today = now.date()
         run_key = today.strftime("%Y-%m-%d")
         if today.day != 1 or now.hour < self.run_hour or self._last_run_key == run_key:
             return

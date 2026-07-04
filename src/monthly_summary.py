@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 from db import AccountingDB, UserBinding
+from utils import beijing_today
 
 if TYPE_CHECKING:
     from feishu_client import FeishuClient
@@ -145,7 +146,7 @@ def format_summary_text(
 
 
 def previous_month_key(today: date | None = None) -> str:
-    current = today or date.today()
+    current = today or beijing_today()
     first_day = current.replace(day=1)
     previous_day = first_day - timedelta(days=1)
     return previous_day.strftime("%Y-%m")

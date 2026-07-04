@@ -6,11 +6,11 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 from config import PROJECT_ROOT, Settings
+from utils import beijing_now_iso
 
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "accounting.db"
 
@@ -264,7 +264,7 @@ def ensure_default_user_binding(settings: Settings, db: AccountingDB) -> UserBin
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return beijing_now_iso()
 
 
 def _user_from_row(row: sqlite3.Row) -> UserBinding:
