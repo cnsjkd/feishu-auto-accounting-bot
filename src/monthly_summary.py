@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
+from commands import build_table_view_url
 from db import AccountingDB, UserBinding
 from utils import beijing_today
 
@@ -43,7 +44,12 @@ class MonthlySummaryService:
             if not monthly_table:
                 continue
             records = self.feishu_client.list_records(user.bitable_app_token, monthly_table.table_id)
-            summary = build_summary(month_key, records, user)
+            summary = build_summary(
+                month_key,
+                records,
+                user,
+                table_url=build_table_view_url(user.bitable_view_url, monthly_table.table_id),
+            )
             self.db.save_monthly_summary(user.id, month_key, summary.text)
             if send_message:
                 self.feishu_client.send_text_to_open_id(user.open_id, summary.text)
@@ -51,7 +57,12 @@ class MonthlySummaryService:
         return summaries
 
 
-def build_summary(month_key: str, records: list[dict[str, Any]], user: UserBinding | None = None) -> MonthlySummary:
+def build_summary(
+    month_key: str,
+    records: list[dict[str, Any]],
+    user: UserBinding | None = None,
+    table_url: str = "",
+) -> MonthlySummary:
     income = 0.0
     expense = 0.0
     count = 0
@@ -94,7 +105,7 @@ def build_summary(month_key: str, records: list[dict[str, Any]], user: UserBindi
         count=count,
         category_expense=category_sorted,
         max_expense=max_expense,
-        table_url=user.bitable_view_url if user else "",
+        table_url=table_url or (user.bitable_view_url if user else ""),
     )
     return MonthlySummary(
         month_key=month_key,

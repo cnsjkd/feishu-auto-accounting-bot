@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from commands import build_bind_guide_text, build_help_text, parse_command
+from commands import build_bind_guide_text, build_help_text, build_table_view_url, parse_command
 from db import AccountingDB, UserBinding, ensure_default_user_binding
 from local_queue import append_pending_bill
 from models import Bill
@@ -122,7 +122,7 @@ class AccountingService:
             "month_key": first_item.get("month_key", ""),
             "table_id": first_item.get("table_id", ""),
             "table_name": first_item.get("table_name", ""),
-            "table_url": user.bitable_view_url,
+            "table_url": self._monthly_table_url(user, str(first_item.get("table_id") or "")),
         }
 
     def _parse_bills(self, text: str, source: str, dedupe_id: str) -> list[Bill]:
@@ -130,6 +130,9 @@ class AccountingService:
         if callable(parse_many):
             return parse_many(text, source=source, dedupe_id=dedupe_id)
         return [self.parser.parse(text, source=source, dedupe_id=dedupe_id)]
+
+    def _monthly_table_url(self, user: UserBinding, table_id: str) -> str:
+        return build_table_view_url(user.bitable_view_url, table_id)
 
     def _save_one_bill(self, bill: Bill, user: UserBinding) -> dict[str, Any]:
         monthly_table = self.monthly_table_manager.get_or_create_for_bill_date(user, bill.date)
@@ -148,7 +151,7 @@ class AccountingService:
                 "month_key": monthly_table.month_key,
                 "table_id": monthly_table.table_id,
                 "table_name": monthly_table.table_name,
-                "table_url": user.bitable_view_url,
+                "table_url": self._monthly_table_url(user, monthly_table.table_id),
                 "feishu_response": response,
             }
         except Exception as exc:  # noqa: BLE001 - 业务层需要兜底落本地队列
@@ -171,6 +174,6 @@ class AccountingService:
                 "month_key": monthly_table.month_key,
                 "table_id": monthly_table.table_id,
                 "table_name": monthly_table.table_name,
-                "table_url": user.bitable_view_url,
+                "table_url": self._monthly_table_url(user, monthly_table.table_id),
                 "error": str(exc),
             }

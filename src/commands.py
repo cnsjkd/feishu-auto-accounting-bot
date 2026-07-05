@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 BIND_PREFIXES = ("绑定账本", "绑定表格", "绑定多维表格", "bind")
 STATUS_COMMANDS = {"账本状态", "绑定状态", "状态", "status"}
@@ -64,6 +64,26 @@ def parse_bitable_link(raw_url: str) -> BitableLink:
         return BitableLink(app_token="", table_id=table_id, view_url=url, wiki_token=wiki_match.group(1))
 
     raise ValueError("链接中没有找到 /base/<token> 或 /wiki/<token>，请确认这是飞书多维表格链接。")
+
+
+def build_table_view_url(original_url: str, table_id: str) -> str:
+    """Return a Feishu Bitable URL that opens the given table_id.
+
+    The bound URL may point to the seed table used during binding. When bills are
+    written to monthly tables, replacing the table query parameter ensures the
+    chat reply preview opens the actual YYYY-MM table.
+    """
+    url = original_url.strip()
+    target_table_id = table_id.strip()
+    if not url or not target_table_id:
+        return url
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    query_items = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key not in {"table", "view"}]
+    query_items.insert(0, ("table", target_table_id))
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
+
 
 
 def build_bind_guide_text(prefix: str = "") -> str:

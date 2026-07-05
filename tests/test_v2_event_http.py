@@ -161,6 +161,9 @@ def main() -> int:
         assert len(client.records) == 1
         assert len(client.replies) == 3
         assert "记账成功" in client.replies[-1][1]
+        assert "table=tbl_2026_07" in client.replies[-1][1]
+        assert "table=tbl_seed" not in client.replies[-1][1]
+        assert "view=" not in client.replies[-1][1]
 
         duplicate = post_json(settings.server_port, message_payload("om_bill", "晚饭18元"))
         assert duplicate["ok"] is True

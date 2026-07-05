@@ -11,7 +11,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from commands import parse_bitable_link, parse_command  # noqa: E402
+from commands import build_table_view_url, parse_bitable_link, parse_command  # noqa: E402
 from config import LLMConfig, Settings  # noqa: E402
 from db import AccountingDB  # noqa: E402
 from models import Bill  # noqa: E402
@@ -128,6 +128,10 @@ def main() -> int:
     assert parsed.table_id == "tbla"
     wiki = parse_bitable_link("https://x.feishu.cn/wiki/wikixxx?table=tblw&view=v")
     assert wiki.wiki_token == "wikixxx"
+    assert (
+        build_table_view_url("https://x.feishu.cn/base/basea?table=tbla&view=v", "tbl_2026_07")
+        == "https://x.feishu.cn/base/basea?table=tbl_2026_07"
+    )
 
     payload = {
         "header": {"tenant_key": "tenant_a"},
@@ -197,6 +201,10 @@ def main() -> int:
         assert result_b["created"] is True
         assert result_a["month_key"] == "2026-07"
         assert result_b["month_key"] == "2026-07"
+        assert result_a["table_url"] == f"https://x.feishu.cn/base/base_a?table={result_a['table_id']}"
+        assert result_b["table_url"] == f"https://x.feishu.cn/base/base_b?table={result_b['table_id']}"
+        assert "tbl_seed" not in result_a["table_url"]
+        assert "view=" not in result_a["table_url"]
         assert result_a["table_id"] != result_b["table_id"]
         assert ("base_a", result_a["table_id"]) in fake_client.records
         assert ("base_b", result_b["table_id"]) in fake_client.records
