@@ -65,7 +65,7 @@ class Settings:
         if self.llm_provider == "fallback":
             sequence = [
                 self.llm_configs[name]
-                for name in ("qwen", "openai", "legacy")
+                for name in ("openai", "legacy", "qwen")
                 if name in self.llm_configs
             ]
             if sequence:
