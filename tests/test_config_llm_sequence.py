@@ -29,7 +29,7 @@ def make_settings(provider: str) -> Settings:
 
 def main() -> int:
     fallback_sequence = [item.name for item in make_settings("fallback").get_llm_sequence()]
-    assert fallback_sequence == ["openai", "legacy", "qwen"]
+    assert fallback_sequence == ["qwen", "openai", "legacy"]
 
     qwen_sequence = [item.name for item in make_settings("qwen").get_llm_sequence()]
     assert qwen_sequence == ["qwen"]
